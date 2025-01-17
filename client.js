@@ -55,7 +55,7 @@ class MCPClient {
 
     async connectToServer(serverConfig) {
         debug('Connecting to server:', serverConfig);
-        const { serverName, command = 'npx', args = [] } = serverConfig;
+        const { serverName, command = 'npx', args = [], env = {} } = serverConfig;
 
         // Check if server already exists
         if (this.servers.has(serverName)) {
@@ -65,12 +65,19 @@ class MCPClient {
                 message: `Server ${serverName} is already registered` 
             };
         }
+
+        const fullEnv = {
+            ...process.env, 
+            ...env 
+        };
         
+        console.log('env', env);
         let transport;
         try {
             transport = new StdioClientTransport({
                 command,
-                args
+                args,
+                env: fullEnv
             });
 
             debug('Created transport, creating session...');
@@ -116,7 +123,8 @@ class MCPClient {
                 const result = await this.connectToServer({
                     serverName,
                     command: serverConfig.command,
-                    args: serverConfig.args
+                    args: serverConfig.args,
+                    env: serverConfig.env
                 });
                 results.push(result);
             } catch (error) {
@@ -297,7 +305,8 @@ app.post('/register', async (req, res) => {
         const result = await client.connectToServer({ 
             serverName,
             command: serverConfig.command,
-            args: serverConfig.args
+            args: serverConfig.args,
+            env: serverConfig.env
         });
         res.json(result);
     } catch (error) {
