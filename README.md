@@ -59,7 +59,9 @@ curl --location 'http://localhost:3000/call-tool' \
 
 All tool calls will be logged in the `.cursorrules` file.
 
-**IMPORTANT:** YOU MUST COPY CURSORRULES TO YOUR OWN REPO AND EDIT IT TO YOUR OWN NEEDS.
+**IMPORTANT:** 
+- YOU MUST COPY CURSORRULES TO YOUR OWN REPO AND EDIT IT TO YOUR OWN NEEDS.
+- YOU MUST COPY "mcp_config.json" TO YOUR OWN REPO AND EDIT IT TO YOUR OWN NEEDS.
 
 ## Contributing
 1. Fork the repository
