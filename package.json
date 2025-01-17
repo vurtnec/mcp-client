@@ -5,10 +5,7 @@
   "type": "module",
   "main": "index.js",
   "scripts": {
-    "start": "node index.js",
-    "dev": "nodemon index.js",
-    "test": "jest",
-    "lint": "eslint ."
+    "start": "node client.js"
   },
   "keywords": [],
   "author": "",

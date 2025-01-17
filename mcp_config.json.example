@@ -1,0 +1,40 @@
+{
+    "mcpServers": {
+      "filesystem": {
+        "command": "npx",
+        "args": [
+          "-y",
+          "@modelcontextprotocol/server-filesystem",
+          "path/to/mcp-filesystem"
+        ]
+      },
+      "jira": {
+        "command": "npx",
+        "args": [
+          "-y",
+          "path/to/mcp-jira",
+          "--jira-url",
+          "your-jira-url",
+          "--jira-username",
+          "your-jira-username",
+          "--jira-api-token",
+          "your-jira-api-token"
+        ]
+      },
+      "postgres": {
+        "command": "npx",
+        "args": [
+          "-y",
+          "@modelcontextprotocol/server-postgres",
+          "your-postgres-url"
+        ]
+      },
+      "sequential-thinking": {
+        "command": "npx",
+        "args": [
+          "-y",
+          "@modelcontextprotocol/server-sequential-thinking"
+        ]
+      }
+    }
+  } 

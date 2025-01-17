@@ -4,6 +4,8 @@ import Anthropic from '@anthropic-ai/sdk';
 import dotenv from 'dotenv';
 import express from 'express';
 import cors from 'cors';
+import fs from 'fs';
+import path from 'path';
 import {
     ReadResourceResultSchema,
     ListToolsResultSchema,
@@ -32,42 +34,43 @@ process.on('unhandledRejection', (reason, promise) => {
 class MCPClient {
     constructor() {
         // Map to store multiple server connections
-        this.servers = new Map(); // key: serverPath, value: { session, transport }
+        this.servers = new Map(); // key: serverName, value: { session, transport }
         this.anthropic = new Anthropic();
+        this.config = null;
         debug('MCPClient initialized');
+    }
+
+    async loadConfig() {
+        try {
+            const configPath = path.join(process.cwd(), 'mcp_config.json');
+            const configData = await fs.promises.readFile(configPath, 'utf8');
+            this.config = JSON.parse(configData);
+            debug('Loaded config:', this.config);
+            return this.config;
+        } catch (error) {
+            debug('Error loading config:', error);
+            throw new Error(`Failed to load mcp_config.json: ${error.message}`);
+        }
     }
 
     async connectToServer(serverConfig) {
         debug('Connecting to server:', serverConfig);
-        const { serverPath, args = [] } = typeof serverConfig === 'string' 
-            ? { serverPath: serverConfig, args: [] }
-            : serverConfig;
+        const { serverName, command = 'npx', args = [] } = serverConfig;
 
         // Check if server already exists
-        if (this.servers.has(serverPath)) {
-            debug('Server already registered:', serverPath);
+        if (this.servers.has(serverName)) {
+            debug('Server already registered:', serverName);
             return { 
                 status: 'error', 
-                message: `Server ${serverPath} is already registered` 
+                message: `Server ${serverName} is already registered` 
             };
         }
-        
-        const isPython = serverPath.endsWith('.py');
-        const isJs = serverPath.endsWith('.js');
-        
-        if (!isPython && !isJs) {
-            debug('Invalid server script type:', serverPath);
-            throw new Error("Server script must be a .py or .js file");
-        }
-
-        const command = isPython ? "python" : "node";
-        debug('Using command:', command, 'with args:', [serverPath, ...args]);
         
         let transport;
         try {
             transport = new StdioClientTransport({
-                command: command,
-                args: [serverPath, ...args]
+                command,
+                args
             });
 
             debug('Created transport, creating session...');
@@ -82,12 +85,12 @@ class MCPClient {
             await session.connect(transport);
             debug('Session connected successfully');
             
-            this.servers.set(serverPath, { session, transport });
+            this.servers.set(serverName, { session, transport });
             debug('Server registered in map');
-                return { 
+            return { 
                 status: 'success', 
-                message: `Successfully connected to server: ${serverPath}`,
-                serverId: serverPath
+                message: `Successfully connected to server: ${serverName}`,
+                serverId: serverName
             };
         } catch (error) {
             debug('Error connecting to server:', error);
@@ -98,17 +101,40 @@ class MCPClient {
                     debug('Error closing transport:', closeError);
                 }
             }
-            if (error.message.includes('ENOENT')) {
-                throw new Error(`Server script not found: ${serverPath}`);
-            }
             throw error;
         }
     }
 
-    async processQuery(query, serverId) {
-        const server = this.servers.get(serverId);
+    async registerAllServers() {
+        if (!this.config) {
+            await this.loadConfig();
+        }
+
+        const results = [];
+        for (const [serverName, serverConfig] of Object.entries(this.config.mcpServers)) {
+            try {
+                const result = await this.connectToServer({
+                    serverName,
+                    command: serverConfig.command,
+                    args: serverConfig.args
+                });
+                results.push(result);
+            } catch (error) {
+                debug(`Error registering server ${serverName}:`, error);
+                results.push({
+                    status: 'error',
+                    message: `Failed to register ${serverName}: ${error.message}`,
+                    serverId: serverName
+                });
+            }
+        }
+        return results;
+    }
+
+    async processToolCall(toolName, args, serverName) {
+        const server = this.servers.get(serverName);
         if (!server) {
-            throw new Error(`Server ${serverId} not found. Please register the server first.`);
+            throw new Error(`Server ${serverName} not found. Please register the server first.`);
         }
 
         try {
@@ -117,82 +143,88 @@ class MCPClient {
                 method: "tools/list" 
             }, ListToolsResultSchema);
 
-            console.log("Available tools:", toolsResponse.tools);
+            debug("Available tools:", toolsResponse.tools);
 
-            // For Jira server, try to get issue details
-            if (toolsResponse.tools.some(tool => tool.name === "jira_get_issue")) {
-                const result = await server.session.request({
-                    method: "tools/call",
-                    params: {
-                        name: "jira_get_issue",
-                        arguments: {
-                            issue_key: query
-                        }
-                    }
-                }, CallToolResultSchema);
-                return {
-                    status: 'success',
-                    query,
-                    server: serverId,
-                    result: result
-                };
+            // Check if the requested tool exists
+            const tool = toolsResponse.tools.find(t => t.name === toolName);
+            if (!tool) {
+                throw new Error(`Tool ${toolName} not found in server ${serverName}. Available tools: ${toolsResponse.tools.map(t => t.name).join(', ')}`);
             }
 
-            // Fallback to default resource reading
-            const resourceContent = await server.session.request(
-                {
-                    method: "resources/read",
-                    params: {
-                        uri: "file:///example.txt"
-                    }
-                },
-                ReadResourceResultSchema
-            );
+            // Call the tool
+            const result = await server.session.request({
+                method: "tools/call",
+                params: {
+                    name: toolName,
+                    arguments: args
+                }
+            }, CallToolResultSchema);
 
             return {
                 status: 'success',
-                query,
-                server: serverId,
-                resource: resourceContent.contents[0].text
+                tool: toolName,
+                server: serverName,
+                result: result
             };
         } catch (error) {
-            console.error("Error processing query:", error);
+            debug("Error processing tool call:", error);
             throw error;
         }
     }
 
-    async disconnectServer(serverId) {
-        const server = this.servers.get(serverId);
+    async disconnectServer(serverName) {
+        const server = this.servers.get(serverName);
         if (!server) {
             return {
                 status: 'error',
-                message: `Server ${serverId} not found`
+                message: `Server ${serverName} not found`
             };
         }
 
-        await server.transport.close();
-        this.servers.delete(serverId);
-        
-        return {
-            status: 'success',
-            message: `Successfully disconnected server: ${serverId}`
-        };
+        try {
+            await server.transport.close();
+            this.servers.delete(serverName);
+            
+            return {
+                status: 'success',
+                message: `Successfully disconnected server: ${serverName}`
+            };
+        } catch (error) {
+            debug("Error disconnecting server:", error);
+            throw error;
+        }
     }
 
     async cleanup() {
+        const results = [];
         // Cleanup all server connections
-        for (const [serverId, server] of this.servers) {
-            await server.transport.close();
+        for (const [serverName, server] of this.servers) {
+            try {
+                await server.transport.close();
+                results.push({
+                    status: 'success',
+                    message: `Successfully disconnected server: ${serverName}`,
+                    serverName
+                });
+            } catch (error) {
+                debug(`Error disconnecting server ${serverName}:`, error);
+                results.push({
+                    status: 'error',
+                    message: `Failed to disconnect ${serverName}: ${error.message}`,
+                    serverName
+                });
+            }
         }
         this.servers.clear();
+        return results;
     }
 
     getStatus() {
         const serverStatus = {};
-        for (const [serverId, server] of this.servers) {
-            serverStatus[serverId] = {
+        for (const [serverName, server] of this.servers) {
+            serverStatus[serverName] = {
                 isConnected: !!server.session,
-                path: serverId
+                name: serverName
             };
         }
         
@@ -200,6 +232,28 @@ class MCPClient {
             totalServers: this.servers.size,
             servers: serverStatus
         };
+    }
+
+    async listTools(serverName) {
+        const server = this.servers.get(serverName);
+        if (!server) {
+            throw new Error(`Server ${serverName} not found. Please register the server first.`);
+        }
+
+        try {
+            const toolsResponse = await server.session.request({ 
+                method: "tools/list" 
+            }, ListToolsResultSchema);
+
+            return {
+                status: 'success',
+                server: serverName,
+                tools: toolsResponse.tools
+            };
+        } catch (error) {
+            debug("Error listing tools:", error);
+            throw error;
+        }
     }
 }
 
@@ -219,14 +273,32 @@ app.get('/status', (req, res) => {
 // Register server endpoint
 app.post('/register', async (req, res) => {
     try {
-        const { serverPath, args } = req.body;
-        if (!serverPath) {
+        const { serverName } = req.body;
+        if (!serverName) {
             return res.status(400).json({ 
                 status: 'error', 
-                message: 'serverPath is required' 
+                message: 'serverName is required' 
             });
         }
-        const result = await client.connectToServer({ serverPath, args });
+
+        // Load config if not loaded
+        if (!client.config) {
+            await client.loadConfig();
+        }
+
+        const serverConfig = client.config.mcpServers[serverName];
+        if (!serverConfig) {
+            return res.status(400).json({
+                status: 'error',
+                message: `Server ${serverName} not found in config`
+            });
+        }
+
+        const result = await client.connectToServer({ 
+            serverName,
+            command: serverConfig.command,
+            args: serverConfig.args
+        });
         res.json(result);
     } catch (error) {
         res.status(500).json({ 
@@ -239,14 +311,14 @@ app.post('/register', async (req, res) => {
 // Disconnect server endpoint
 app.post('/disconnect', async (req, res) => {
     try {
-        const { serverId } = req.body;
-        if (!serverId) {
+        const { serverName } = req.body;
+        if (!serverName) {
             return res.status(400).json({ 
                 status: 'error', 
-                message: 'serverId is required' 
+                message: 'serverName is required' 
             });
         }
-        const result = await client.disconnectServer(serverId);
+        const result = await client.disconnectServer(serverName);
         res.json(result);
     } catch (error) {
         res.status(500).json({ 
@@ -257,22 +329,48 @@ app.post('/disconnect', async (req, res) => {
 });
 
 // Process query endpoint
-app.post('/query', async (req, res) => {
+app.post('/call-tool', async (req, res) => {
     try {
-        const { query, serverId } = req.body;
-        if (!query) {
+        const { toolName, args, serverName } = req.body;
+        if (!toolName) {
             return res.status(400).json({ 
                 status: 'error', 
-                message: 'query is required' 
+                message: 'toolName is required' 
             });
         }
-        if (!serverId) {
+        if (!serverName) {
             return res.status(400).json({ 
                 status: 'error', 
-                message: 'serverId is required' 
+                message: 'serverName is required' 
             });
         }
-        const result = await client.processQuery(query, serverId);
+        if (!args) {
+            return res.status(400).json({ 
+                status: 'error', 
+                message: 'args is required' 
+            });
+        }
+        const result = await client.processToolCall(toolName, args, serverName);
+        res.json(result);
+    } catch (error) {
+        res.status(500).json({ 
+            status: 'error', 
+            message: error.message 
+        });
+    }
+});
+
+// List tools endpoint
+app.get('/list-tools/:serverName', async (req, res) => {
+    try {
+        const { serverName } = req.params;
+        if (!serverName) {
+            return res.status(400).json({ 
+                status: 'error', 
+                message: 'serverName is required' 
+            });
+        }
+        const result = await client.listTools(serverName);
         res.json(result);
     } catch (error) {
         res.status(500).json({ 
@@ -297,11 +395,22 @@ process.on('SIGINT', async () => {
 
 // Start the server
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
+app.listen(PORT, async () => {
     console.log(`MCP Client Service running on http://localhost:${PORT}`);
+    
+    // Auto-register all servers from config
+    try {
+        await client.loadConfig();
+        const results = await client.registerAllServers();
+        console.log('Auto-registration results:', results);
+    } catch (error) {
+        console.error('Error during auto-registration:', error);
+    }
+
     console.log('Available endpoints:');
     console.log('  GET  /status              - Get current connection status');
-    console.log('  POST /register            - Register a server (body: { "serverPath": "path/to/server.js" })');
-    console.log('  POST /disconnect          - Disconnect a server (body: { "serverId": "server-path" })');
-    console.log('  POST /query               - Process a query (body: { "serverId": "server-path", "query": "your query here" })');
+    console.log('  GET  /list-tools/:serverName - List available tools for a server');
+    console.log('  POST /register            - Register a server (body: { "serverName": "server-name-from-config" })');
+    console.log('  POST /disconnect          - Disconnect a server (body: { "serverName": "server-name" })');
+    console.log('  POST /call-tool           - Process a tool call (body: { "serverName": "server-name", "toolName": "tool-name", "args": "tool-args" })');
 });

@@ -1,0 +1,100 @@
+# Instructions
+
+## Basic
+
+You should also use the `.cursorrules` file as a scratchpad to organize your thoughts. Especially when you receive a new task, you should first review the content of the scratchpad, clear old different task if necessary, first explain the task, and plan the steps you need to take to complete the task. You can use todo markers to indicate the progress, e.g.
+[X] Task 1
+[ ] Task 2
+Also update the progress of the task in the Scratchpad when you finish a subtask.
+Especially when you finished a milestone, it will help to improve your depth of task accomplishment to use the scratchpad to reflect and plan.
+The goal is to help you maintain a big picture as well as the progress of the task. Always refer to the Scratchpad when you plan the next step.
+
+## MCP Integration
+
+When processing requests, you must follow below steps:
+
+1. Check `mcp_config.json` to find applicable MCP servers that might help with the request.
+2. For relevant servers, list their available tools using the list-tools API:
+```
+curl --location 'http://localhost:3000/list-tools/{serverName}'
+```
+
+Example response:
+```
+{
+    "status": "success",
+    "server": "server_name",
+    "tools": [
+        {
+            "name": "jira_get_issue",
+            "description": "Get details of a specific Jira issue.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "issue_key": {
+                        "type": "string",
+                        "description": "Jira issue key (e.g., 'PROJ-123')"
+                    },
+                    "expand": {
+                        "type": "string",
+                        "description": "Optional fields to expand"
+                    }
+                },
+                "required": [
+                    "issue_key"
+                ],
+                "additionalProperties": false,
+                "$schema": "http://json-schema.org/draft-07/schema#"
+            }
+        }
+    ]
+}
+```
+
+3. If a suitable tool exists in the response, make the call using this format:
+```
+curl --location 'http://localhost:3000/call-tool' \
+--header 'Content-Type: application/json' \
+--data '{
+    "serverName": "server_name",
+    "toolName": "tool_name",
+    "args": {
+        // Arguments must match the inputSchema from the list-tools response
+        // Required fields must be included
+        // Optional fields can be omitted
+        // Example based on above schema:
+        // "issue_key": "PROJ-123"  // Required
+        // "expand": "..."          // Optional
+    }
+}'
+```
+This will output the result of the tool call in the following format:
+```
+{
+    "status": "success",
+    "result": {
+        "content": [
+            {
+                "type": "text",
+                "text": "..." // The result of the tool call
+            }
+        ]
+    }
+}
+```
+
+4. If the task is not completed and there are other steps, go back to the first step and start again.
+
+
+## Tool Usage Guidelines
+1. Check all required parameters are available before making tool calls
+2. If required parameters are missing, ask the user to provide them
+3. Use exact values provided by the user when specified
+4. Don't ask about or make up values for optional parameters
+5. Always execute tool one by one and do not execute multiple tools at once in the same command
+6. When using a new server, always list the available tools first.
+7. You can call different tools multiple times to solve the one task.
+8. When you execute any command, always execute it separately instead of combining multiple commands with '&&' or '||' or '>'.
+
+
+# Scratchpad
